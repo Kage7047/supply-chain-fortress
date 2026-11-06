@@ -212,7 +212,7 @@ hung() { cat "$OUT/hung-$1.out"; return "$(cat "$OUT/hung-$1.rc")"; }
 signal_kyverno STOP
 for job in "a09 enforced $UNSIGNED" "p09 enforced $GOOD" "c09 fail-open $UNSIGNED"; do
   read -r id ns image <<<"$job"
-  (admit "$id" "$ns" "$image" >"$OUT/hung-$id.out"; echo $? >"$OUT/hung-$id.rc") &
+  (if admit "$id" "$ns" "$image" >"$OUT/hung-$id.out"; then echo 0; else echo 1; fi >"$OUT/hung-$id.rc") &
 done
 wait
 signal_kyverno CONT
