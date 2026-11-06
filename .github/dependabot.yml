@@ -1,0 +1,23 @@
+# Updates arrive as pull requests, so every new pin goes through the same CI as any other change.
+# The cooldown skips releases younger than a week: most hijacked releases are caught and pulled
+# within days.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+  - package-ecosystem: pip
+    directory: /test
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7

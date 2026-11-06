@@ -1,0 +1,92 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions: {}
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: gofmt
+        run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - name: actionlint
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - name: ko base image pinned by digest
+        run: |
+          grep -Eq '^defaultBaseImage: [^ ]+@sha256:[0-9a-f]{64}$' .ko.yaml
+
+  test:
+    name: test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go test -race ./...
+
+  workflow-attacks:
+    name: workflow attacks
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: install zizmor
+        run: python3 -m pip install --user --require-hashes --no-deps -r test/requirements.txt
+      - run: test/workflows.sh
+
+  cluster-attacks:
+    name: cluster attacks
+    # Signing needs GitHub's OIDC token, which pull requests from forks do not get.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write # keyless signing of the test images
+    env:
+      OUT: test/out
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.4
+      - run: test/tools.sh
+      - name: cluster
+        run: test/cluster-up.sh | tail -1 >"$RUNNER_TEMP/registry"
+      - name: images
+        run: test/images.sh "$(cat "$RUNNER_TEMP/registry")"
+      - name: attacks
+        run: SUBJECT="https://github.com/$GITHUB_WORKFLOW_REF" test/attacks.sh "$(cat "$RUNNER_TEMP/registry")"
+      - name: Kyverno logs
+        if: failure()
+        run: kubectl -n kyverno logs -l app.kubernetes.io/component=admission-controller --tail=300

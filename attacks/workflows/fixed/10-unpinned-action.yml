@@ -1,0 +1,14 @@
+# The fix: pin the full commit SHA, which cannot be moved, and let Dependabot propose updates.
+name: unpinned-action
+on: pull_request
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6

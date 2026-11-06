@@ -1,0 +1,6 @@
+# Every action, including GitHub's own, is pinned to a full commit SHA.
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        "*": hash-pin

