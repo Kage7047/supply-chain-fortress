@@ -22,7 +22,8 @@ spec:
       - apiGroups: [""]
         apiVersions: [v1]
         operations: [CREATE, UPDATE]
-        resources: [pods]
+        # The subresource is how `kubectl debug` adds a container to a running pod (attack a08).
+        resources: [pods, pods/ephemeralcontainers] # render: resources
     namespaceSelector:
       matchExpressions:
         - { key: kubernetes.io/metadata.name, operator: NotIn, values: [kube-system, kyverno] } # render: namespaces
@@ -31,7 +32,8 @@ spec:
   validationConfigurations:
     mutateDigest: true # the pod runs the digest that was verified, not whatever the tag points to later
     verifyDigest: true
-    required: true
+    # An image the pattern matches but no validation checked is refused (attack a06).
+    required: true # render: required
   credentials:
     allowInsecureRegistry: false # render: insecure
   attestors:
@@ -48,8 +50,8 @@ spec:
       intoto:
         type: https://spdx.dev/Document
   validations:
-    # Init and ephemeral containers run code too. A policy that checks only images.containers,
-    # like most examples, lets an unsigned image in through an init container (attack 06).
+    # Init and ephemeral containers run code too. Most examples check only images.containers;
+    # here every kind is checked, and `required` above refuses anything that slips past (a06).
     - expression: >-
         (images.containers + images.initContainers + images.ephemeralContainers)
         .map(image, verifyImageSignatures(image, [attestors.release])).all(e, e > 0)

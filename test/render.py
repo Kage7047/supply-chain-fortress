@@ -35,6 +35,10 @@ def render(text: str, a: argparse.Namespace) -> str:
             line = line.replace("allowInsecureRegistry: false", "allowInsecureRegistry: true")
         elif key == "subject" and a.subject:
             line = re.sub(r"subject: \S+", f"subject: {a.subject}", line)
+        elif key == "required" and a.not_required:
+            line = line.replace("required: true", "required: false")
+        elif key == "resources" and a.pods_only:
+            line = line.replace("[pods, pods/ephemeralcontainers]", "[pods]")
         else:
             key = None
         if key:
@@ -46,13 +50,15 @@ def render(text: str, a: argparse.Namespace) -> str:
     wanted |= {"registry"} if a.registry else set()
     wanted |= {"insecure"} if a.insecure else set()
     wanted |= {"subject"} if a.subject else set()
+    wanted |= {"required"} if a.not_required else set()
+    wanted |= {"resources"} if a.pods_only else set()
     if missing := wanted - used:
         sys.exit(f"render: no marker for {sorted(missing)} in {a.file}")
     if a.registry and PROD_REGISTRY in rendered:
         sys.exit(f"render: {PROD_REGISTRY} left on a line without a marker in {a.file}")
 
     if a.containers_only:
-        # The control for attack 06: the policy as most examples write it.
+        # The control for attack a06: the validations as most examples write them.
         if ALL_CONTAINERS not in rendered:
             sys.exit("render: --containers-only found nothing to narrow")
         rendered = rendered.replace(ALL_CONTAINERS, "images.containers")
@@ -67,7 +73,9 @@ def main() -> None:
     p.add_argument("--registry")
     p.add_argument("--subject")
     p.add_argument("--insecure", action="store_true")
-    p.add_argument("--containers-only", action="store_true")
+    p.add_argument("--containers-only", action="store_true", help="check only images.containers (control for a06)")
+    p.add_argument("--not-required", action="store_true", help="validationConfigurations.required: false (control for a06)")
+    p.add_argument("--pods-only", action="store_true", help="do not match pods/ephemeralcontainers (control for a08)")
     a = p.parse_args()
     with open(a.file) as f:
         sys.stdout.write(render(f.read(), a))

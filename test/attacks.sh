@@ -24,7 +24,9 @@ prefix="$registry/fortress/"
 #   enforced         the production policies, signer = this run
 #   prod-identity    the production policies, signer = release.yml on main (unchanged)
 #   signatures-only  control: the signature policy without the registry allowlist
-#   containers-only  control: a signature policy that checks only images.containers
+#   narrow           validations check only images.containers, `required` still on
+#   narrow-optional  control: validations check only images.containers, `required` off
+#   pods-only        control: the policy does not match the pods/ephemeralcontainers subresource
 #   no-policy        control: nothing
 kubectl apply -f - >/dev/null <<EOF
 apiVersion: v1
@@ -41,7 +43,15 @@ metadata: {name: signatures-only, labels: {fortress.test/images: enforced}}
 ---
 apiVersion: v1
 kind: Namespace
-metadata: {name: containers-only, labels: {fortress.test/images: containers-only}}
+metadata: {name: narrow, labels: {fortress.test/images: narrow}}
+---
+apiVersion: v1
+kind: Namespace
+metadata: {name: narrow-optional, labels: {fortress.test/images: narrow-optional}}
+---
+apiVersion: v1
+kind: Namespace
+metadata: {name: pods-only, labels: {fortress.test/images: pods-only, fortress.test/registries: enforced}}
 ---
 apiVersion: v1
 kind: Namespace
@@ -54,7 +64,11 @@ render() { python3 test/render.py "$@" --registry "$prefix"; }
   echo ---
   render policy/image-signatures.yaml --variant prod-identity --label fortress.test/images --insecure
   echo ---
-  render policy/image-signatures.yaml --variant containers-only --label fortress.test/images --insecure --subject "$SUBJECT" --containers-only
+  render policy/image-signatures.yaml --variant narrow --label fortress.test/images --insecure --subject "$SUBJECT" --containers-only
+  echo ---
+  render policy/image-signatures.yaml --variant narrow-optional --label fortress.test/images --insecure --subject "$SUBJECT" --containers-only --not-required
+  echo ---
+  render policy/image-signatures.yaml --variant pods-only --label fortress.test/images --insecure --subject "$SUBJECT" --pods-only
   echo ---
   render policy/allowed-registries.yaml --variant enforced --label fortress.test/registries
 } >"$OUT/policies.yaml"
@@ -83,15 +97,29 @@ ready() { # namespace image [init]
 }
 ready enforced "$UNSIGNED"
 ready prod-identity "$GOOD"
-ready containers-only "$UNSIGNED"
+ready narrow "$UNSIGNED"
+ready narrow-optional "$UNSIGNED"
+ready pods-only "$UNSIGNED"
 ready enforced "$BUSYBOX"
+
+# a08 needs a pod that already exists: `kubectl debug` adds its container to a running pod
+# through the pods/ephemeralcontainers subresource, after the pod itself was admitted. The pods
+# are admitted with the genuine image and never pulled (the node cannot reach the test registry
+# over plain HTTP), which does not matter: adding an ephemeral container is still an admission
+# request.
+for ns in enforced pods-only; do pod target "$ns" "$GOOD" | kubectl apply -f - >/dev/null; done
+
+debug() { # name namespace image: what `kubectl debug target --image=<image>` sends
+  kubectl -n "$2" patch pod target --subresource=ephemeralcontainers --type=strategic \
+    --dry-run=server -o yaml -p "{\"spec\":{\"ephemeralContainers\":[{\"name\":\"$1\",\"image\":\"$3\"}]}}" 2>&1
+}
 
 rows=()
 failed=0
-check() { # id want namespace description image [init-image]
+check() { # id want namespace description image [init-image]; ATTEMPT=debug for a08
   local id=$1 want=$2 ns=$3 what=$4 out got result
   shift 4
-  if out=$(admit "$id" "$ns" "$@"); then got=admitted; else got=denied; fi
+  if out=$(${ATTEMPT:-admit} "$id" "$ns" "$@"); then got=admitted; else got=denied; fi
   result=ok
   case $want in
     admitted) [[ $got == admitted ]] || result=FAIL ;;
@@ -131,9 +159,14 @@ check a05 "denied:image from outside the allowed registry" enforced "image from 
 check c05 admitted signatures-only "control: another registry, signature policy alone" "$BUSYBOX"
 
 check a06 "denied:$not_signed" enforced "genuine app, unsigned init container" "$GOOD" "$UNSIGNED"
-check c06 admitted containers-only "control: unsigned init container, policy checks only containers" "$GOOD" "$UNSIGNED"
+check a06n "denied:no policy performed a signature or attestation check" narrow \
+  "unsigned init container, validations check only containers: \`required\` refuses it" "$GOOD" "$UNSIGNED"
+check c06 admitted narrow-optional "control: unsigned init container, only containers checked, required off" "$GOOD" "$UNSIGNED"
 
 check a07 "denied:$not_signed" prod-identity "signed in CI, but not by release.yml on main" "$GOOD"
+
+ATTEMPT=debug check a08 "denied:$not_signed" enforced "kubectl debug: unsigned ephemeral container on a running pod" "$UNSIGNED"
+ATTEMPT=debug check c08 admitted pods-only "control: kubectl debug, policy does not match the subresource" "$UNSIGNED"
 
 {
   echo "### Cluster attacks"
