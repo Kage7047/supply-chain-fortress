@@ -37,6 +37,8 @@ def render(text: str, a: argparse.Namespace) -> str:
             line = re.sub(r"subject: \S+", f"subject: {a.subject}", line)
         elif key == "required" and a.not_required:
             line = line.replace("required: true", "required: false")
+        elif key == "failure" and a.fail_open:
+            line = line.replace("failurePolicy: Fail", "failurePolicy: Ignore")
         elif key == "resources" and a.pods_only:
             line = line.replace("[pods, pods/ephemeralcontainers]", "[pods]")
         else:
@@ -52,6 +54,7 @@ def render(text: str, a: argparse.Namespace) -> str:
     wanted |= {"subject"} if a.subject else set()
     wanted |= {"required"} if a.not_required else set()
     wanted |= {"resources"} if a.pods_only else set()
+    wanted |= {"failure"} if a.fail_open else set()
     if missing := wanted - used:
         sys.exit(f"render: no marker for {sorted(missing)} in {a.file}")
     if a.registry and PROD_REGISTRY in rendered:
@@ -75,6 +78,7 @@ def main() -> None:
     p.add_argument("--insecure", action="store_true")
     p.add_argument("--containers-only", action="store_true", help="check only images.containers (control for a06)")
     p.add_argument("--not-required", action="store_true", help="validationConfigurations.required: false (control for a06)")
+    p.add_argument("--fail-open", action="store_true", help="failurePolicy: Ignore (control for a09)")
     p.add_argument("--pods-only", action="store_true", help="do not match pods/ephemeralcontainers (control for a08)")
     a = p.parse_args()
     with open(a.file) as f:

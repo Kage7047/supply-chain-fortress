@@ -27,6 +27,7 @@ prefix="$registry/fortress/"
 #   narrow           validations check only images.containers, `required` still on
 #   narrow-optional  control: validations check only images.containers, `required` off
 #   pods-only        control: the policy does not match the pods/ephemeralcontainers subresource
+#   fail-open        control: failurePolicy Ignore, for when Kyverno is down
 #   no-policy        control: nothing
 kubectl apply -f - >/dev/null <<EOF
 apiVersion: v1
@@ -55,6 +56,10 @@ metadata: {name: pods-only, labels: {fortress.test/images: pods-only, fortress.t
 ---
 apiVersion: v1
 kind: Namespace
+metadata: {name: fail-open, labels: {fortress.test/images: fail-open, fortress.test/registries: enforced}}
+---
+apiVersion: v1
+kind: Namespace
 metadata: {name: no-policy}
 EOF
 
@@ -69,6 +74,8 @@ render() { python3 test/render.py "$@" --registry "$prefix"; }
   render policy/image-signatures.yaml --variant narrow-optional --label fortress.test/images --insecure --subject "$SUBJECT" --containers-only --not-required
   echo ---
   render policy/image-signatures.yaml --variant pods-only --label fortress.test/images --insecure --subject "$SUBJECT" --pods-only
+  echo ---
+  render policy/image-signatures.yaml --variant fail-open --label fortress.test/images --insecure --subject "$SUBJECT" --fail-open
   echo ---
   render policy/allowed-registries.yaml --variant enforced --label fortress.test/registries
 } >"$OUT/policies.yaml"
@@ -100,6 +107,7 @@ ready prod-identity "$GOOD"
 ready narrow "$UNSIGNED"
 ready narrow-optional "$UNSIGNED"
 ready pods-only "$UNSIGNED"
+ready fail-open "$UNSIGNED"
 ready enforced "$BUSYBOX"
 
 # a08 needs a pod that already exists: `kubectl debug` adds its container to a running pod
@@ -112,6 +120,13 @@ for ns in enforced pods-only; do pod target "$ns" "$GOOD" | kubectl apply -f - >
 debug() { # name namespace image: what `kubectl debug target --image=<image>` sends
   kubectl -n "$2" patch pod target --subresource=ephemeralcontainers --type=strategic \
     --dry-run=server -o yaml -p "{\"spec\":{\"ephemeralContainers\":[{\"name\":\"$1\",\"image\":\"$3\"}]}}" 2>&1
+}
+
+deploy() { # name namespace image: a Deployment, checked when it is created (autogen)
+  kubectl apply --dry-run=server -o yaml -f - 2>&1 <<YAML
+{apiVersion: apps/v1, kind: Deployment, metadata: {name: $1, namespace: $2}, spec: {selector: {matchLabels: {app: $1}},
+ template: {metadata: {labels: {app: $1}}, spec: {containers: [{name: app, image: "$3"}]}}}}
+YAML
 }
 
 rows=()
@@ -167,6 +182,19 @@ check a07 "denied:$not_signed" prod-identity "signed in CI, but not by release.y
 
 ATTEMPT=debug check a08 "denied:$not_signed" enforced "kubectl debug: unsigned ephemeral container on a running pod" "$UNSIGNED"
 ATTEMPT=debug check c08 admitted pods-only "control: kubectl debug, policy does not match the subresource" "$UNSIGNED"
+
+ATTEMPT=deploy check ok4 "admitted@$good_digest" enforced "genuine image in a Deployment, by tag: rewritten to the digest" "$REPO:good"
+ATTEMPT=deploy check a13 "denied:$not_signed" enforced "unsigned image in a Deployment, refused before any pod exists" "$UNSIGNED"
+ATTEMPT=deploy check c13 admitted no-policy "control: unsigned Deployment, no policy" "$UNSIGNED"
+
+# a09, last because it takes Kyverno away: with the admission controller gone, the API server
+# cannot ask it anything. failurePolicy decides what happens to the pod then.
+kubectl -n kyverno scale deployment kyverno-admission-controller --replicas=0 >/dev/null
+kubectl -n kyverno wait --for=delete pod -l app.kubernetes.io/component=admission-controller --timeout=120s >/dev/null
+down="failed calling webhook"
+check a09 "denied:$down" enforced "Kyverno down: unsigned image" "$UNSIGNED"
+check p09 "denied:$down" enforced "Kyverno down: the genuine image is refused too (the price of failing closed)" "$GOOD"
+check c09 admitted fail-open "control: Kyverno down, failurePolicy Ignore lets the unsigned image in" "$UNSIGNED"
 
 {
   echo "### Cluster attacks"

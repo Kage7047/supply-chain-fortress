@@ -11,7 +11,8 @@ metadata:
   name: fortress-images # render: name
 spec:
   validationActions: [Deny]
-  failurePolicy: Fail # if Kyverno is down, pods are refused rather than let through
+  # If Kyverno is down, pods are refused rather than let through (attack a09).
+  failurePolicy: Fail # render: failure
   webhookConfiguration:
     timeoutSeconds: 15
   evaluation:
@@ -27,6 +28,11 @@ spec:
     namespaceSelector:
       matchExpressions:
         - { key: kubernetes.io/metadata.name, operator: NotIn, values: [kube-system, kyverno] } # render: namespaces
+  # Check Deployments, Jobs and the rest when they are created, not only the pods they make later:
+  # a bad image is refused at `kubectl apply`, not as a ReplicaSet that never scales (attack a13).
+  autogen:
+    podControllers:
+      controllers: [deployments, replicasets, statefulsets, daemonsets, jobs, cronjobs]
   matchImageReferences:
     - glob: "ghcr.io/kage7047/supply-chain-fortress/*" # render: registry
   validationConfigurations:

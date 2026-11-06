@@ -85,8 +85,12 @@ jobs:
         run: test/cluster-up.sh | tail -1 >"$RUNNER_TEMP/registry"
       - name: images
         run: test/images.sh "$(cat "$RUNNER_TEMP/registry")"
+      - name: Kyverno's own images
+        run: test/kyverno-trust.sh "$(cat "$RUNNER_TEMP/registry")"
       - name: attacks
         run: SUBJECT="https://github.com/$GITHUB_WORKFLOW_REF" test/attacks.sh "$(cat "$RUNNER_TEMP/registry")"
       - name: Kyverno logs
         if: failure()
-        run: kubectl -n kyverno logs -l app.kubernetes.io/component=admission-controller --tail=300
+        run: |
+          kubectl get validatingwebhookconfigurations -o yaml | grep -E '^\s+(name|failurePolicy):|namespaceSelector' -A0 || true
+          kubectl -n kyverno logs -l app.kubernetes.io/component=admission-controller --tail=300
