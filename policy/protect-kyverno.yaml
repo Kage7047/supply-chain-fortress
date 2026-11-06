@@ -1,0 +1,47 @@
+# Kyverno cannot be scaled to zero or deleted.
+#
+# When Kyverno's Deployment is scaled to zero or deleted, its last pod deletes all of Kyverno's
+# webhook configurations on the way out (pkg/webhooks/server.go, cleanup). That is deliberate,
+# so a dead Kyverno cannot brick the cluster, but it means `failurePolicy: Fail` never applies:
+# pods are admitted unchecked, and nothing reports an error (attack a14). failurePolicy only
+# covers a Kyverno that is still deployed but cannot answer (attack a09).
+#
+# This is a built-in ValidatingAdmissionPolicy: the API server evaluates it, so it does not depend
+# on Kyverno being up. To take Kyverno down on purpose, delete the binding first; that is a
+# deliberate, audited act rather than a `kubectl scale` that switches enforcement off.
+#
+# It does not stop a cluster admin from deleting the webhook configurations directly: Kubernetes
+# exempts webhook configurations from all admission policies, so that is down to RBAC.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: fortress-kyverno-stays-up
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [apps]
+        apiVersions: [v1]
+        operations: [UPDATE, DELETE]
+        resources: [deployments, deployments/scale]
+        resourceNames: [kyverno-admission-controller]
+  validations:
+    - expression: request.operation != 'DELETE'
+      message: Kyverno's admission controller cannot be deleted
+    - expression: >-
+        request.operation == 'DELETE' || !has(object.spec.replicas) || object.spec.replicas >= 1
+      message: >-
+        Kyverno's admission controller cannot be scaled to zero: on the way down it deletes its own
+        webhooks, and every pod after that is admitted unchecked
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: fortress-kyverno-stays-up
+spec:
+  policyName: fortress-kyverno-stays-up
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchExpressions:
+        - { key: kubernetes.io/metadata.name, operator: In, values: [kyverno] }

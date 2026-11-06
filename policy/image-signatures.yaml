@@ -23,16 +23,74 @@ spec:
       - apiGroups: [""]
         apiVersions: [v1]
         operations: [CREATE, UPDATE]
-        # The subresource is how `kubectl debug` adds a container to a running pod (attack a08).
-        resources: [pods, pods/ephemeralcontainers] # render: resources
+        # Exactly `pods` and nothing else: only then does Kyverno also generate the same checks for
+        # Deployments, Jobs and the other pod controllers ("autogen"), refusing a bad image at
+        # `kubectl apply` instead of leaving a ReplicaSet that never makes a pod (attack a13). Add
+        # the debug subresource here and autogen switches off without a word, which is why
+        # `kubectl debug` gets its own policy below.
+        resources: [pods]
     namespaceSelector:
       matchExpressions:
         - { key: kubernetes.io/metadata.name, operator: NotIn, values: [kube-system, kyverno] } # render: namespaces
-  # Check Deployments, Jobs and the rest when they are created, not only the pods they make later:
-  # a bad image is refused at `kubectl apply`, not as a ReplicaSet that never scales (attack a13).
-  autogen:
-    podControllers:
-      controllers: [deployments, replicasets, statefulsets, daemonsets, jobs, cronjobs]
+  matchImageReferences:
+    - glob: "ghcr.io/kage7047/supply-chain-fortress/*" # render: registry
+  validationConfigurations:
+    mutateDigest: true # the pod runs the digest that was verified, not whatever the tag points to later
+    verifyDigest: true
+    # An image the pattern matches but no validation checked is refused (attack a06).
+    required: true # render: required
+  credentials:
+    allowInsecureRegistry: false # render: insecure
+  attestors:
+    - name: release
+      cosign:
+        keyless:
+          identities:
+            - issuer: https://token.actions.githubusercontent.com
+              subject: https://github.com/Kage7047/supply-chain-fortress/.github/workflows/release.yml@refs/heads/main # render: subject
+        ctlog:
+          url: https://rekor.sigstore.dev
+  attestations:
+    - name: sbom
+      intoto:
+        type: https://spdx.dev/Document
+  validations:
+    # Init and ephemeral containers run code too. Most examples check only images.containers;
+    # here every kind is checked, and `required` above refuses anything that slips past (a06).
+    - expression: >-
+        (images.containers + images.initContainers + images.ephemeralContainers)
+        .map(image, verifyImageSignatures(image, [attestors.release])).all(e, e > 0)
+      message: image is not signed by the release workflow on main
+    - expression: >-
+        (images.containers + images.initContainers + images.ephemeralContainers)
+        .map(image, verifyAttestationSignatures(image, attestations.sbom, [attestors.release])).all(e, e > 0)
+      message: image has no SBOM attested by the release workflow on main
+---
+# The same checks for containers that `kubectl debug` adds to running pods.
+apiVersion: policies.kyverno.io/v1
+kind: ImageValidatingPolicy
+metadata:
+  name: fortress-debug-images # render: name
+spec:
+  validationActions: [Deny]
+  # If Kyverno is down, pods are refused rather than let through (attack a09).
+  failurePolicy: Fail # render: failure
+  webhookConfiguration:
+    timeoutSeconds: 15
+  evaluation:
+    background:
+      enabled: false
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [UPDATE]
+        # How `kubectl debug` adds a container to a pod that is already running (attack a08). The
+        # pod was checked when it was created; the container added later never was.
+        resources: [pods/ephemeralcontainers] # render: debug
+    namespaceSelector:
+      matchExpressions:
+        - { key: kubernetes.io/metadata.name, operator: NotIn, values: [kube-system, kyverno] } # render: namespaces
   matchImageReferences:
     - glob: "ghcr.io/kage7047/supply-chain-fortress/*" # render: registry
   validationConfigurations:

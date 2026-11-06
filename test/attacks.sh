@@ -80,6 +80,7 @@ render() { python3 test/render.py "$@" --registry "$prefix"; }
   render policy/allowed-registries.yaml --variant enforced --label fortress.test/registries
 } >"$OUT/policies.yaml"
 kubectl apply -f "$OUT/policies.yaml"
+kubectl apply -f policy/protect-kyverno.yaml # unmodified: it only concerns Kyverno itself
 
 pod() { # name namespace image [init-image]
   echo "{apiVersion: v1, kind: Pod, metadata: {name: $1, namespace: $2}, spec: {"
@@ -108,6 +109,14 @@ ready narrow "$UNSIGNED"
 ready narrow-optional "$UNSIGNED"
 ready pods-only "$UNSIGNED"
 ready fail-open "$UNSIGNED"
+
+scale_to_zero() { # the request `kubectl scale --replicas=0` sends, without carrying it out
+  kubectl -n kyverno scale deployment kyverno-admission-controller --replicas=0 --dry-run=server 2>&1
+}
+delete_kyverno() {
+  kubectl -n kyverno delete deployment kyverno-admission-controller --dry-run=server 2>&1
+}
+for _ in $(seq 60); do scale_to_zero >/dev/null || break; sleep 2; done
 ready enforced "$BUSYBOX"
 
 # a08 needs a pod that already exists: `kubectl debug` adds its container to a running pod
@@ -187,15 +196,37 @@ ATTEMPT=deploy check ok4 "admitted@$good_digest" enforced "genuine image in a De
 ATTEMPT=deploy check a13 "denied:$not_signed" enforced "unsigned image in a Deployment, refused before any pod exists" "$UNSIGNED"
 ATTEMPT=deploy check c13 admitted no-policy "control: unsigned Deployment, no policy" "$UNSIGNED"
 
-# a09, last because it takes Kyverno away: with the admission controller gone, the API server
-# cannot ask it anything. failurePolicy decides what happens to the pod then.
+# The guard on Kyverno itself (policy/protect-kyverno.yaml).
+ATTEMPT=scale_to_zero check a14 "denied:cannot be scaled to zero" kyverno "scale Kyverno to zero (an incident, a script, an autoscaler)"
+ATTEMPT=delete_kyverno check a14d "denied:cannot be deleted" kyverno "delete Kyverno's Deployment"
+
+# a09: Kyverno is deployed but cannot answer (crashed, hung, cut off by the network). Simulated by
+# pointing its Service at no pods. The API server cannot ask it anything, and failurePolicy decides.
+service_endpoints() {
+  kubectl -n kyverno get endpointslices -l kubernetes.io/service-name=kyverno-svc \
+    -o jsonpath='{.items[*].endpoints[*].addresses[*]}'
+}
+selector=$(kubectl -n kyverno get service kyverno-svc -o jsonpath='{.spec.selector}')
+kubectl -n kyverno patch service kyverno-svc --type=json \
+  -p '[{"op":"replace","path":"/spec/selector","value":{"fortress.test/unreachable":"true"}}]' >/dev/null
+for _ in $(seq 60); do [[ -z $(service_endpoints) ]] && break; sleep 1; done
+down="failed calling webhook"
+check a09 "denied:$down" enforced "Kyverno unreachable: unsigned image" "$UNSIGNED"
+check p09 "denied:$down" enforced "Kyverno unreachable: the genuine image is refused too (the price of failing closed)" "$GOOD"
+check c09 admitted fail-open "control: Kyverno unreachable, failurePolicy Ignore lets the unsigned image in" "$UNSIGNED"
+kubectl -n kyverno patch service kyverno-svc --type=json \
+  -p "[{\"op\":\"replace\",\"path\":\"/spec/selector\",\"value\":$selector}]" >/dev/null
+for _ in $(seq 60); do [[ -n $(service_endpoints) ]] && break; sleep 1; done
+ready enforced "$UNSIGNED"
+
+# c14, last because it takes Kyverno away for good: without the guard, scaling to zero is allowed.
+# Kyverno deletes its webhooks on the way down, and failurePolicy: Fail never gets a say.
+kubectl delete validatingadmissionpolicybinding fortress-kyverno-stays-up >/dev/null
+for _ in $(seq 60); do scale_to_zero >/dev/null && break; sleep 2; done
 kubectl -n kyverno scale deployment kyverno-admission-controller --replicas=0 >/dev/null
 kubectl -n kyverno wait --for=delete pod -l app.kubernetes.io/component=admission-controller --timeout=120s >/dev/null
-down="failed calling webhook"
-check a09 "denied:$down" enforced "Kyverno down: unsigned image" "$UNSIGNED"
-check p09 "denied:$down" enforced "Kyverno down: the genuine image is refused too (the price of failing closed)" "$GOOD"
-check c09 admitted fail-open "control: Kyverno down, failurePolicy Ignore lets the unsigned image in" "$UNSIGNED"
-
+webhooks=$(kubectl get validatingwebhookconfigurations -l webhook.kyverno.io/managed-by=kyverno -o name | wc -l)
+check c14 admitted enforced "control: no guard, Kyverno scaled to zero ($webhooks webhooks left): unsigned image admitted" "$UNSIGNED"
 {
   echo "### Cluster attacks"
   echo
