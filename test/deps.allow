@@ -1,0 +1,3 @@
+# Go modules the app may depend on, one module path per line. A module that is not listed fails
+# `test/gocheck.sh module`, even when go.sum and the checksum database agree it is genuine.
+# The app has no dependencies, on purpose: none listed.

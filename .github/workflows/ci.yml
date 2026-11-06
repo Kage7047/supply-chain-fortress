@@ -21,6 +21,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+      - name: go settings keep the checksum database on
+        run: test/gocheck.sh env
       - name: gofmt
         run: test -z "$(gofmt -l .)"
       - run: go vet ./...
@@ -57,6 +59,28 @@ jobs:
       - name: install zizmor
         run: python3 -m pip install --user --require-hashes --no-deps -r test/requirements.txt
       - run: test/workflows.sh
+
+  dependency-attacks:
+    name: dependency attacks
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      OUT: test/out
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: go settings keep the checksum database on
+        run: test/gocheck.sh env
+      - name: the app's own dependencies
+        run: test/gocheck.sh module . test/deps.allow
+      - name: attacks
+        run: test/deps.sh
 
   cluster-attacks:
     name: cluster attacks
