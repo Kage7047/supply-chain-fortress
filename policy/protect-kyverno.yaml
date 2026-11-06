@@ -10,8 +10,9 @@
 # on Kyverno being up. To take Kyverno down on purpose, delete the binding first; that is a
 # deliberate, audited act rather than a `kubectl scale` that switches enforcement off.
 #
-# It does not stop a cluster admin from deleting the webhook configurations directly: Kubernetes
-# exempts webhook configurations from all admission policies, so that is down to RBAC.
+# The second policy keeps anyone but Kyverno from deleting or rewriting Kyverno's webhook
+# configurations, the other way to switch it off (attack a15). Admission webhooks, Kyverno
+# included, never see requests for webhook configurations; built-in policies do.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -47,3 +48,34 @@ spec:
     namespaceSelector:
       matchExpressions:
         - { key: kubernetes.io/metadata.name, operator: In, values: [kyverno] }
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: fortress-kyverno-webhooks-stay
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [admissionregistration.k8s.io]
+        apiVersions: [v1]
+        operations: [UPDATE, DELETE]
+        resources: [validatingwebhookconfigurations, mutatingwebhookconfigurations]
+    objectSelector:
+      matchExpressions:
+        - { key: webhook.kyverno.io/managed-by, operator: Exists }
+  matchConditions:
+    # Kyverno keeps its own webhooks up to date, and removes them when it is meant to go away.
+    - name: not-kyverno
+      expression: request.userInfo.username != 'system:serviceaccount:kyverno:kyverno-admission-controller'
+  validations:
+    - expression: "false"
+      message: only Kyverno may change or delete its webhook configurations
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: fortress-kyverno-webhooks-stay
+spec:
+  policyName: fortress-kyverno-webhooks-stay
+  validationActions: [Deny]
