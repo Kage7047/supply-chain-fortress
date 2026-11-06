@@ -200,23 +200,26 @@ ATTEMPT=deploy check c13 admitted no-policy "control: unsigned Deployment, no po
 ATTEMPT=scale_to_zero check a14 "denied:cannot be scaled to zero" kyverno "scale Kyverno to zero (an incident, a script, an autoscaler)"
 ATTEMPT=delete_kyverno check a14d "denied:cannot be deleted" kyverno "delete Kyverno's Deployment"
 
-# a09: Kyverno is deployed but cannot answer (crashed, hung, cut off by the network). Simulated by
-# pointing its Service at no pods. The API server cannot ask it anything, and failurePolicy decides.
-service_endpoints() {
-  kubectl -n kyverno get endpointslices -l kubernetes.io/service-name=kyverno-svc \
-    -o jsonpath='{.items[*].endpoints[*].addresses[*]}'
+# a09: Kyverno is deployed but cannot answer: hung, overloaded, or cut off. Simulated by freezing
+# its process (SIGSTOP from the node). Changing its Service is not enough: the API server keeps its
+# open connection to the old pod. The three requests run at once, so the whole test fits inside
+# the webhook timeout, before the liveness probe restarts Kyverno.
+signal_kyverno() { # STOP|CONT
+  docker exec fortress-control-plane sh -c 'n=0; for p in /proc/[0-9]*; do
+    [ "$(cat "$p/comm" 2>/dev/null)" = kyverno ] && kill -'"$1"' "${p#/proc/}" && n=$((n+1)); done; [ "$n" -gt 0 ]'
 }
-selector=$(kubectl -n kyverno get service kyverno-svc -o jsonpath='{.spec.selector}')
-kubectl -n kyverno patch service kyverno-svc --type=json \
-  -p '[{"op":"replace","path":"/spec/selector","value":{"fortress.test/unreachable":"true"}}]' >/dev/null
-for _ in $(seq 60); do [[ -z $(service_endpoints) ]] && break; sleep 1; done
+hung() { cat "$OUT/hung-$1.out"; return "$(cat "$OUT/hung-$1.rc")"; }
+signal_kyverno STOP
+for job in "a09 enforced $UNSIGNED" "p09 enforced $GOOD" "c09 fail-open $UNSIGNED"; do
+  read -r id ns image <<<"$job"
+  (admit "$id" "$ns" "$image" >"$OUT/hung-$id.out"; echo $? >"$OUT/hung-$id.rc") &
+done
+wait
+signal_kyverno CONT
 down="failed calling webhook"
-check a09 "denied:$down" enforced "Kyverno unreachable: unsigned image" "$UNSIGNED"
-check p09 "denied:$down" enforced "Kyverno unreachable: the genuine image is refused too (the price of failing closed)" "$GOOD"
-check c09 admitted fail-open "control: Kyverno unreachable, failurePolicy Ignore lets the unsigned image in" "$UNSIGNED"
-kubectl -n kyverno patch service kyverno-svc --type=json \
-  -p "[{\"op\":\"replace\",\"path\":\"/spec/selector\",\"value\":$selector}]" >/dev/null
-for _ in $(seq 60); do [[ -n $(service_endpoints) ]] && break; sleep 1; done
+ATTEMPT=hung check a09 "denied:$down" enforced "Kyverno hung: unsigned image"
+ATTEMPT=hung check p09 "denied:$down" enforced "Kyverno hung: the genuine image is refused too (the price of failing closed)"
+ATTEMPT=hung check c09 admitted fail-open "control: Kyverno hung, failurePolicy Ignore lets the unsigned image in"
 ready enforced "$UNSIGNED"
 
 # c14, last because it takes Kyverno away for good: without the guard, scaling to zero is allowed.

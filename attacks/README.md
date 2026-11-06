@@ -20,7 +20,7 @@ nothing.
 | a06 | Genuine app container, unsigned init container | the validations check init and ephemeral containers too; `required: true` refuses any matched image no validation looked at | **admitted when the validations check only `images.containers` (as most examples do) and `required` is off**. With `required` on, the narrow policy still refuses it (a06n) |
 | a07 | Image signed in CI, but by a pull request run of another workflow | the certificate identity names the release workflow and branch | admitted by the same policy with this run's identity |
 | a08 | `kubectl debug` an admitted pod with an unsigned image | the policy matches the `pods/ephemeralcontainers` subresource, not only pods | **admitted by a policy that matches only `pods`**: the pod was verified once, the debug container never is |
-| a09 | Make Kyverno unable to answer (crashed, hung, cut off by the network), then deploy | `failurePolicy: Fail`: the API server refuses what it cannot check. The genuine image is refused too (p09): failing closed costs availability | **admitted with `failurePolicy: Ignore`** |
+| a09 | Kyverno is deployed but cannot answer (hung, overloaded, cut off), then deploy | `failurePolicy: Fail`: the API server refuses what it cannot check. The genuine image is refused too (p09): failing closed costs availability | **admitted with `failurePolicy: Ignore`** |
 | a14 | Scale Kyverno to zero (an incident, a script, an autoscaler), or delete its Deployment (a14d) | a built-in `ValidatingAdmissionPolicy` evaluated by the API server itself ([`protect-kyverno.yaml`](../policy/protect-kyverno.yaml)) | **without it, the unsigned image is admitted even with `failurePolicy: Fail`** (c14): on the way down, Kyverno deletes its own webhooks |
 | a13 | Put the unsigned image in a Deployment | autogen: Kyverno generates the same checks for Deployments, Jobs and the rest, so the Deployment is refused at `kubectl apply` | admitted with no policy |
 
@@ -30,6 +30,8 @@ deletes every Kyverno webhook configuration when its Deployment is scaled to zer
 (`cleanup` in `pkg/webhooks/server.go`), so there is nothing left to fail. **a13:** autogen only
 runs when a policy matches exactly `pods`. Matching `pods/ephemeralcontainers` too, which closes
 a08, switched autogen off without a warning, so `kubectl debug` now has a policy of its own.
+And the guard's own first version let `kubectl scale --replicas=0` through: a Scale object leaves
+`replicas` out when it is zero, and the expression read a missing field as "not set".
 
 Positive checks run first: the genuine image is admitted by digest, by tag (rewritten to its
 digest), and through tag `v1` before a04 moves it; a Deployment of the genuine image is admitted
