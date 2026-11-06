@@ -79,7 +79,9 @@ render() { python3 test/render.py "$@" --registry "$prefix"; }
   echo ---
   render policy/allowed-registries.yaml --variant enforced --label fortress.test/registries
 } >"$OUT/policies.yaml"
-kubectl apply -f "$OUT/policies.yaml"
+# Retried: Kyverno validates policies through its own webhook, which can take a moment to answer.
+for _ in $(seq 30); do kubectl apply -f "$OUT/policies.yaml" && break; sleep 4; done
+kubectl apply -f "$OUT/policies.yaml" >/dev/null
 kubectl apply -f policy/protect-kyverno.yaml # unmodified: it only concerns Kyverno itself
 
 pod() { # name namespace image [init-image]

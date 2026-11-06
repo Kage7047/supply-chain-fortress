@@ -12,7 +12,10 @@ digest=${image#*@}
 tag_ref="${image%@*}:${GITHUB_SHA:?}"
 BUSYBOX=docker.io/library/busybox@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
 
-kubectl apply -f policy/
+# Kyverno validates policies through its own webhook, which can take a moment to answer after
+# install even though its pods are ready.
+for _ in $(seq 30); do kubectl apply -f policy/ && break; sleep 4; done
+kubectl apply -f policy/ >/dev/null
 kubectl create namespace release-check
 
 admit() { # name image
