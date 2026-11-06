@@ -1,0 +1,17 @@
+# expect: unpinned-uses
+# A tag is a pointer the action's owner (or whoever steals their token) can move. In March 2025
+# every tag of tj-actions/changed-files was re-pointed at a commit that printed CI secrets into
+# public logs, and every workflow using a tag ran it.
+name: unpinned-action
+on: pull_request
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: tj-actions/changed-files@v47

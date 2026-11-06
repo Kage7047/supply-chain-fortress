@@ -1,0 +1,13 @@
+# The base image is pinned by digest: a tag can be moved under us, a digest cannot.
+# Dependabot does not update ko bases, so the lint job refuses one without a digest.
+defaultBaseImage: cgr.dev/chainguard/static@sha256:fc42af33e643f20d08baf03cddcc1c02ba57052dfb02edb0d79f3fc47bcea8d9
+defaultPlatforms:
+  - linux/amd64
+builds:
+  - id: app
+    dir: .
+    main: ./app
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w

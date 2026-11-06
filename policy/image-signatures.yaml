@@ -1,0 +1,62 @@
+# Every image from this repository's registry path must be signed, and have an SBOM attested,
+# by the release workflow on main. A signature from anything else does not count: not another
+# workflow in this repository, not a pull request, not a fork, not a key someone holds.
+#
+# test/render.py rewrites a copy of this file for the cluster tests; each line it changes is marked
+# "render:". Keep those lines exactly as they are or the render fails, which is the point: the tests
+# must exercise this file, not a lookalike.
+apiVersion: policies.kyverno.io/v1
+kind: ImageValidatingPolicy
+metadata:
+  name: fortress-images # render: name
+spec:
+  validationActions: [Deny]
+  failurePolicy: Fail # if Kyverno is down, pods are refused rather than let through
+  webhookConfiguration:
+    timeoutSeconds: 15
+  evaluation:
+    background:
+      enabled: false
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        # The subresource is how `kubectl debug` adds a container to a running pod (attack a08).
+        resources: [pods, pods/ephemeralcontainers] # render: resources
+    namespaceSelector:
+      matchExpressions:
+        - { key: kubernetes.io/metadata.name, operator: NotIn, values: [kube-system, kyverno] } # render: namespaces
+  matchImageReferences:
+    - glob: "ghcr.io/kage7047/supply-chain-fortress/*" # render: registry
+  validationConfigurations:
+    mutateDigest: true # the pod runs the digest that was verified, not whatever the tag points to later
+    verifyDigest: true
+    # An image the pattern matches but no validation checked is refused (attack a06).
+    required: true # render: required
+  credentials:
+    allowInsecureRegistry: false # render: insecure
+  attestors:
+    - name: release
+      cosign:
+        keyless:
+          identities:
+            - issuer: https://token.actions.githubusercontent.com
+              subject: https://github.com/Kage7047/supply-chain-fortress/.github/workflows/release.yml@refs/heads/main # render: subject
+        ctlog:
+          url: https://rekor.sigstore.dev
+  attestations:
+    - name: sbom
+      intoto:
+        type: https://spdx.dev/Document
+  validations:
+    # Init and ephemeral containers run code too. Most examples check only images.containers;
+    # here every kind is checked, and `required` above refuses anything that slips past (a06).
+    - expression: >-
+        (images.containers + images.initContainers + images.ephemeralContainers)
+        .map(image, verifyImageSignatures(image, [attestors.release])).all(e, e > 0)
+      message: image is not signed by the release workflow on main
+    - expression: >-
+        (images.containers + images.initContainers + images.ephemeralContainers)
+        .map(image, verifyAttestationSignatures(image, attestations.sbom, [attestors.release])).all(e, e > 0)
+      message: image has no SBOM attested by the release workflow on main

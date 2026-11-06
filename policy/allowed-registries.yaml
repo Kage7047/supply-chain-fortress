@@ -1,0 +1,43 @@
+# The signature policy only checks images that match its pattern, so an image from any other
+# registry is not "unsigned", it is simply not looked at (attack 05). This closes that door: in
+# the namespaces it binds to, every container image must come from this repository's registry path.
+#
+# It is a built-in ValidatingAdmissionPolicy, not a Kyverno policy, so it keeps working if
+# Kyverno is misconfigured. test/render.py rewrites the "render:" lines for the cluster tests.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: fortress-allowed-registries # render: name
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods, pods/ephemeralcontainers]
+  variables:
+    - name: prefix
+      expression: "'ghcr.io/kage7047/supply-chain-fortress/'" # render: registry
+    - name: images
+      expression: >-
+        object.spec.containers.map(c, c.image) +
+        object.spec.?initContainers.orValue([]).map(c, c.image) +
+        object.spec.?ephemeralContainers.orValue([]).map(c, c.image)
+    - name: outside
+      expression: variables.images.filter(i, !i.startsWith(variables.prefix))
+  validations:
+    - expression: size(variables.outside) == 0
+      messageExpression: "'image from outside the allowed registry: ' + variables.outside.join(', ')"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: fortress-allowed-registries # render: name
+spec:
+  policyName: fortress-allowed-registries # render: name
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchExpressions:
+        - { key: kubernetes.io/metadata.name, operator: NotIn, values: [kube-system, kyverno, local-path-storage] } # render: namespaces

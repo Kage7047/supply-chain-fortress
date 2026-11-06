@@ -42,7 +42,8 @@ checks its Raft:
   policy names it, and its branch, in the certificate identity. A signature from a pull request,
   another workflow in this repository, or a fork is refused (attack a07).
 - [`policy/image-signatures.yaml`](policy/image-signatures.yaml) checks containers, init containers
-  and ephemeral containers. Most examples check only `images.containers` (attack a06).
+  and ephemeral containers, including ones added later with `kubectl debug`. Most examples check
+  only `images.containers` and match only `pods` (attacks a06, a08).
 - [`policy/allowed-registries.yaml`](policy/allowed-registries.yaml) exists because the signature
   policy only looks at images matching its pattern. An image from anywhere else is not
   "unsigned", it is unexamined (attack a05).
@@ -87,5 +88,4 @@ gh attestation verify oci://ghcr.io/kage7047/supply-chain-fortress/app:<commit s
 
 Kyverno's own images are pulled by tag inside its chart, so the verifier is not yet verified;
 Deployments are refused only when they create pods (no policy on the controller objects);
-`kubectl debug` adds ephemeral containers through a subresource the Kyverno policy does not match
-(the registry policy does); dependency confusion and build-cache poisoning have no attack yet.
+dependency confusion and build-cache poisoning have no attack yet.

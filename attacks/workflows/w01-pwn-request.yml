@@ -1,0 +1,21 @@
+# expect: dangerous-triggers
+# A "pwn request": pull_request_target runs with the base repository's secrets and a write token,
+# then checks out and runs the pull request's code. Anyone who opens a PR runs code with those
+# secrets. This is how the Ultralytics and many smaller compromises started.
+name: pwn-request
+on: pull_request_target
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - run: make test
