@@ -96,6 +96,7 @@ gh attestation verify oci://ghcr.io/kage7047/supply-chain-fortress/app:<commit s
 ## Not covered yet
 
 The registry allowlist checks pods, not Deployments (the signature policy checks both);
-dependency confusion and build-cache poisoning have no attack yet; anyone who can delete Kyverno's
-webhook configurations, or change the `kyverno` namespace, switches all of this off: no admission
-policy can guard webhook configurations, so those permissions belong to cluster admins only.
+dependency confusion and build-cache poisoning have no attack yet; anyone who can change the `kyverno`
+namespace (Kyverno's own image, its Service) or delete the guard policies switches all of this off,
+so those permissions belong to cluster admins only. Admission webhooks never see requests for
+webhook configurations, so the guard on them has to be a built-in policy (attack a15).

@@ -118,7 +118,19 @@ scale_to_zero() { # the request `kubectl scale --replicas=0` sends, without carr
 delete_kyverno() {
   kubectl -n kyverno delete deployment kyverno-admission-controller --dry-run=server 2>&1
 }
+delete_webhooks() { # every webhook configuration Kyverno manages
+  kubectl delete validatingwebhookconfigurations,mutatingwebhookconfigurations \
+    -l webhook.kyverno.io/managed-by --dry-run=server 2>&1
+}
+as_kyverno() { # Kyverno itself must still be able to manage them
+  kubectl delete validatingwebhookconfigurations -l webhook.kyverno.io/managed-by --dry-run=server \
+    --as=system:serviceaccount:kyverno:kyverno-admission-controller 2>&1
+}
+sa=$(kubectl -n kyverno get deployment kyverno-admission-controller -o jsonpath='{.spec.template.spec.serviceAccountName}')
+[[ $sa == kyverno-admission-controller ]] ||
+  { echo "Kyverno runs as service account '$sa'; policy/protect-kyverno.yaml exempts kyverno-admission-controller" >&2; exit 1; }
 for _ in $(seq 60); do scale_to_zero >/dev/null || break; sleep 2; done
+for _ in $(seq 60); do delete_webhooks >/dev/null || break; sleep 2; done
 ready enforced "$BUSYBOX"
 
 # a08 needs a pod that already exists: `kubectl debug` adds its container to a running pod
@@ -201,6 +213,8 @@ ATTEMPT=deploy check c13 admitted no-policy "control: unsigned Deployment, no po
 # The guard on Kyverno itself (policy/protect-kyverno.yaml).
 ATTEMPT=scale_to_zero check a14 "denied:cannot be scaled to zero" kyverno "scale Kyverno to zero (an incident, a script, an autoscaler)"
 ATTEMPT=delete_kyverno check a14d "denied:cannot be deleted" kyverno "delete Kyverno's Deployment"
+ATTEMPT=delete_webhooks check a15 "denied:only Kyverno may change or delete" cluster "delete Kyverno's webhook configurations"
+ATTEMPT=as_kyverno check ok6 admitted cluster "Kyverno itself may still delete them"
 
 # a09: Kyverno is deployed but cannot answer: hung, overloaded, or cut off. Simulated by freezing
 # its process (SIGSTOP from the node). Changing its Service is not enough: the API server keeps its
@@ -226,8 +240,9 @@ ready enforced "$UNSIGNED"
 
 # c14, last because it takes Kyverno away for good: without the guard, scaling to zero is allowed.
 # Kyverno deletes its webhooks on the way down, and failurePolicy: Fail never gets a say.
-kubectl delete validatingadmissionpolicybinding fortress-kyverno-stays-up >/dev/null
+kubectl delete validatingadmissionpolicybinding fortress-kyverno-stays-up fortress-kyverno-webhooks-stay >/dev/null
 for _ in $(seq 60); do scale_to_zero >/dev/null && break; sleep 2; done
+ATTEMPT=delete_webhooks check c15 admitted cluster "control: no guard, a cluster admin deletes Kyverno's webhook configurations"
 kubectl -n kyverno scale deployment kyverno-admission-controller --replicas=0 >/dev/null
 kubectl -n kyverno wait --for=delete pod -l app.kubernetes.io/component=admission-controller --timeout=120s >/dev/null
 webhooks=$(kubectl get validatingwebhookconfigurations -l webhook.kyverno.io/managed-by=kyverno -o name | wc -l)

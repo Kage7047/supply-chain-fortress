@@ -22,6 +22,7 @@ nothing.
 | a08 | `kubectl debug` an admitted pod with an unsigned image | the policy matches the `pods/ephemeralcontainers` subresource, not only pods | **admitted by a policy that matches only `pods`**: the pod was verified once, the debug container never is |
 | a09 | Kyverno is deployed but cannot answer (hung, overloaded, cut off), then deploy | `failurePolicy: Fail`: the API server refuses what it cannot check. The genuine image is refused too (p09): failing closed costs availability | **admitted with `failurePolicy: Ignore`** |
 | a14 | Scale Kyverno to zero (an incident, a script, an autoscaler), or delete its Deployment (a14d) | a built-in `ValidatingAdmissionPolicy` evaluated by the API server itself ([`protect-kyverno.yaml`](../policy/protect-kyverno.yaml)) | **without it, the unsigned image is admitted even with `failurePolicy: Fail`** (c14): on the way down, Kyverno deletes its own webhooks |
+| a15 | Delete Kyverno's webhook configurations (the other way to switch it off) | a second built-in policy: only Kyverno's own service account may change or delete them (ok6 checks Kyverno still can) | **without it, a cluster admin deletes them** (c15) |
 | a13 | Put the unsigned image in a Deployment | autogen: Kyverno generates the same checks for Deployments, Jobs and the rest, so the Deployment is refused at `kubectl apply` | admitted with no policy |
 
 Two of these were found by the tests failing. **a14:** the first version of a09 scaled Kyverno
