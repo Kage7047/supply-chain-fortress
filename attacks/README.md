@@ -1,7 +1,8 @@
 # Attacks
 
 Each attack is a test. The cluster attacks run in the `cluster attacks` CI job
-([`test/attacks.sh`](../test/attacks.sh)); the workflow attacks run in `workflow attacks`
+([`test/attacks.sh`](../test/attacks.sh)), the dependency attacks in `dependency attacks`
+([`test/deps.sh`](../test/deps.sh)), and the workflow attacks in `workflow attacks`
 ([`test/workflows.sh`](../test/workflows.sh)).
 
 ## Cluster attacks
@@ -61,6 +62,33 @@ Pinning the digest matters as much as the provenance: Kyverno's other images (`k
 `background-controller`) have the same repository and tag in their provenance, so a check by
 provenance alone would accept one of them in place of the admission controller.
 
+## Dependency attacks
+
+Go module paths are domain names, so npm-style dependency confusion (publish a public package
+under the name of your private one) does not apply. These are the Go attacks that do.
+
+The victim is a small module that depends on `rsc.io/quote v1.5.2`, a real public module kept for
+demos. A local proxy serves the same version with a backdoor in `Hello()`. The defences are in
+[`test/gocheck.sh`](../test/gocheck.sh): `env` runs before every step that fetches a Go module, and
+`module` checks the app's go.mod and go.sum (the app has no dependencies, on purpose, so for now
+that check guards the next one somebody adds). Every control runs the backdoor, except c04, where
+the point is that nothing looks wrong.
+
+| id | attack | refused by | control |
+|---|---|---|---|
+| d01 | The proxy serves a tampered copy of a version already in go.sum | go.sum: "does NOT match an earlier download" | **backdoor runs** with no go.sum line and the checksum database skipped |
+| d02 | The same, for a version new to go.sum (`go get`, a version bump) | the checksum database (sum.golang.org) | **backdoor runs** with `GONOSUMDB=rsc.io` |
+| d03 | A pull request changes the go.sum line to the tampered hash, and the proxy (a company proxy, a `GOPROXY` override) serves the tampered module | `gocheck.sh module`: go.sum is derived again from the checksum database, and every committed line must match | **backdoor runs with default settings**: the go command never asks the checksum database about a line that is already in go.sum |
+| d04 | A lookalike module (here `rsc.io/quote/v3`), genuine and in the checksum database | the allowlist [`test/deps.allow`](../test/deps.allow) | `go build` and `go mod verify` accept it: checksums prove everyone got the same bytes, not that they are the bytes you meant. The real case: `github.com/boltdb-go/bolt`, a backdoored copy of boltdb/bolt that proxy.golang.org kept serving for three years (Socket, Feb 2025) |
+| d05 | The job's settings switch the checksum database off: `GONOSUMDB`, `GOPRIVATE=*`, `GOSUMDB=off`, another `GOPROXY` | `gocheck.sh env`, in every job before Go fetches anything (CI lint, the release's `go install ko`) | **backdoor runs** with `GOSUMDB=off` |
+| d06 | go.mod replaces the module with a directory in the repository | `gocheck.sh module` refuses `replace` | **backdoor runs with default settings**, the genuine proxy and the checksum database on: a directory has no go.sum line |
+| d07 | The backdoor is edited into `vendor/` | `gocheck.sh module` refuses `vendor/` (and `go.work`, which can replace modules the same way) | **backdoor runs with default settings**, and `go mod verify` passes: Go builds from `vendor/` when it exists, and neither checks it against go.sum |
+
+d03 is the one worth remembering. go.sum is trust on first use: it stops a proxy from changing
+code you already have, but a go.sum change in a pull request is trusted the same way, and a
+reviewer cannot tell a good hash from a bad one. d06 and d07 were found by an automated review
+of the first version of the check, which only looked at go.sum.
+
 ## Workflow attacks
 
 The file in `workflows/` must be flagged by the zizmor audit on its `# expect:` line; its fixed
@@ -76,6 +104,6 @@ version in `workflows/fixed/` must come out clean under `--pedantic`.
 
 ## Next
 
-- Dependency confusion and `go.sum` tampering
+- Build tools installed at `@latest` (every `go install` and `go run` here pins a version, but nothing checks it)
 - Registry allowlist for Deployments (the `ValidatingAdmissionPolicy` still checks only pods)
 - Cache poisoning across workflows

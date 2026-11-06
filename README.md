@@ -54,6 +54,9 @@ checks its Raft:
   an older release (attacks a10 to a12). If Kyverno cannot answer, pods are refused (a09); it
   cannot be scaled to zero or deleted, because then it removes its own webhooks and everything is
   admitted (a14).
+- Go dependencies: the checksum database stays on in every job that fetches a module, go.sum is
+  checked line by line against it (go itself trusts whatever go.sum says, attack d03), and
+  `replace`, `vendor/` and lookalike modules are refused (attacks d01 to d07).
 - Every action is pinned to a commit SHA, every downloaded tool to a checksum, every image to a
   digest, Kyverno's Helm chart included. zizmor runs in its strictest persona on the repository's
   own workflows and must find nothing.
@@ -61,11 +64,13 @@ checks its Raft:
 ## Run it
 
 The cluster tests sign images keyless with GitHub's OIDC token, so they run in Actions (see the
-`cluster attacks` job's summary for the table). The workflow attacks run anywhere:
+`cluster attacks` job's summary for the table). The workflow and dependency attacks run anywhere
+(the dependency attacks need Go and the network):
 
 ```bash
 pip install --require-hashes --no-deps -r test/requirements.txt
 test/workflows.sh
+test/deps.sh
 ```
 
 Verify a released image yourself:
@@ -91,12 +96,14 @@ gh attestation verify oci://ghcr.io/kage7047/supply-chain-fortress/app:<commit s
 | `test/verify-kyverno.sh` | checks Kyverno's images before they are installed |
 | `test/kyverno-trust.sh` | attacks on Kyverno's own images |
 | `test/admit.sh` | proves the unmodified policies admit the real release |
+| `test/gocheck.sh` | the Go dependency checks: settings, allowlist, go.sum against the checksum database |
+| `test/deps.sh` | runs every dependency attack and its control |
 | `test/workflows.sh` | runs zizmor on each workflow attack, its fix, and this repo's workflows |
 
 ## Not covered yet
 
 The registry allowlist checks pods, not Deployments (the signature policy checks both);
-dependency confusion and build-cache poisoning have no attack yet; anyone who can change the `kyverno`
+build-cache poisoning has no attack yet; anyone who can change the `kyverno`
 namespace (Kyverno's own image, its Service) or delete the guard policies switches all of this off,
 so those permissions belong to cluster admins only. Admission webhooks never see requests for
 webhook configurations, so the guard on them has to be a built-in policy (attack a15).
