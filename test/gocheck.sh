@@ -13,7 +13,7 @@ set -euo pipefail
 
 checksum_env() { # the settings the go.sum derivation runs with, whatever the caller's are
   env -u GONOSUMDB -u GOPRIVATE -u GONOPROXY -u GOINSECURE -u GOFLAGS \
-    GOENV=off GOPROXY=https://proxy.golang.org,direct GOSUMDB=sum.golang.org GOFLAGS=-modcacherw "$@"
+    GOENV=off GOWORK=off GOPROXY=https://proxy.golang.org,direct GOSUMDB=sum.golang.org GOFLAGS=-modcacherw "$@"
 }
 
 check_env() {
@@ -32,8 +32,12 @@ check_env() {
     case $v in
       -mod=mod) problems+=("GOFLAGS has -mod=mod: the build may add modules and go.sum lines") ;;
       -insecure) problems+=("GOFLAGS has -insecure: modules are fetched without TLS checks") ;;
+      -mod=vendor) problems+=("GOFLAGS has -mod=vendor: vendored code is never checked against go.sum") ;;
+      -modfile=*) problems+=("GOFLAGS has $v: the build reads a different go.mod and go.sum") ;;
     esac
   done
+  [[ -z $(go env GOWORK) || $(go env GOWORK) == off ]] ||
+    problems+=("GOWORK=$(go env GOWORK): a workspace's replacements and go.work.sum bypass go.sum")
   if ((${#problems[@]})); then
     printf 'go settings switch off a dependency check: %s\n' "${problems[@]}" >&2
     return 1
@@ -48,6 +52,27 @@ check_module() {
   cache=$(mktemp -d)
   # shellcheck disable=SC2064 # expand now: the paths are local
   trap "rm -rf '$work' '$cache'" EXIT
+
+  # 0. Ways for code to reach the build without go.sum being consulted at all.
+  if [[ -e $dir/vendor ]]; then
+    echo "$dir/vendor exists: go builds vendored code and never checks it against go.sum (attack d07)" >&2
+    return 1
+  fi
+  for path in go.work go.work.sum; do
+    if [[ -e $dir/$path ]]; then
+      echo "$dir/$path exists: a workspace's replacements and sums bypass go.sum" >&2
+      return 1
+    fi
+  done
+  local replaces
+  replaces=$(cd "$dir" && checksum_env go mod edit -json | python3 -I -c '
+import json, sys
+for r in json.load(sys.stdin).get("Replace") or []:
+    print(r["Old"]["Path"], "=>", r["New"]["Path"], r["New"].get("Version", ""))')
+  if [[ -n $replaces ]]; then
+    echo "go.mod replaces a module, so the code built is not the code in go.sum (attack d06): $replaces" >&2
+    return 1
+  fi
 
   # 1. Every module in the build must be one somebody chose. A lookalike module is genuine as far
   #    as go.sum and the checksum database can tell: they prove everyone got the same bytes, not

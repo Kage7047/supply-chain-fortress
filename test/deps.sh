@@ -98,6 +98,31 @@ verified_build() { # the go command's own checks on a module: build it, then go 
   gox "$1" GOMODCACHE="$work/cache.verify" -- run . && gox "$1" GOMODCACHE="$work/cache.verify" -- mod verify
 }
 
+# A replace directive pointing at a directory in the repository, holding the tampered code. A
+# directory replacement has no go.sum line at all.
+mkdir -p "$work/replaced/quote"
+cp -r "$work/victim/." "$work/replaced/"
+cp "$work/sum.genuine" "$work/replaced/go.sum"
+python3 -I - "$work/evil/$MOD/@v/$VER.zip" "$work/replaced/quote" <<'EOF'
+import os, sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as z:
+    for name in z.namelist():
+        rel = name.split("@v1.5.2/", 1)[1]
+        os.makedirs(os.path.join(sys.argv[2], os.path.dirname(rel)), exist_ok=True)
+        with open(os.path.join(sys.argv[2], rel), "wb") as f:
+            f.write(z.read(name))
+EOF
+gox "$work/replaced" -- mod edit -replace "$MOD=./quote"
+
+# Vendored dependencies with the backdoor edited into vendor/: go builds from vendor/ by default
+# when it exists, and go.sum is not consulted for it.
+mkdir "$work/vendored"
+cp -r "$work/victim/." "$work/vendored/"
+cp "$work/sum.genuine" "$work/vendored/go.sum"
+gox "$work/vendored" -- mod vendor
+sed -i 's|return sampler.Hello()|return "BACKDOOR " + sampler.Hello()|' "$work/vendored/vendor/$MOD/quote.go"
+grep -q BACKDOOR "$work/vendored/vendor/$MOD/quote.go"
+
 failed=0
 rows=()
 # check <id> <expect: genuine|refused|backdoor> <needle> <description> -- <command...>
@@ -153,6 +178,16 @@ check d04 refused "is not on the allowlist" "a lookalike module (rsc.io/quote/v3
   -- "$here/gocheck.sh" module "$work/lookalike" "$work/allow"
 check c04 genuine "" "control: go build and go mod verify accept the lookalike" \
   -- verified_build "$work/lookalike"
+
+check d06 refused "replaces a module" "go.mod replaces $MOD with a directory in the repository" \
+  -- "$here/gocheck.sh" module "$work/replaced" "$work/allow"
+check c06 backdoor "" "control: a plain go build, genuine proxy, checksum database on" \
+  -- gox "$work/replaced" -- run .
+
+check d07 refused "never checks it against go.sum" "the backdoor is edited into vendor/" \
+  -- "$here/gocheck.sh" module "$work/vendored" "$work/allow"
+check c07 backdoor "" "control: a plain go build uses vendor/; go mod verify passes" \
+  -- verified_build "$work/vendored"
 
 check d05 refused "skip the checksum database" "the job's settings exempt modules from the checksum database (GONOSUMDB)" \
   -- env GONOSUMDB=rsc.io "$here/gocheck.sh" env
