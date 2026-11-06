@@ -42,11 +42,18 @@ checks its Raft:
   policy names it, and its branch, in the certificate identity. A signature from a pull request,
   another workflow in this repository, or a fork is refused (attack a07).
 - [`policy/image-signatures.yaml`](policy/image-signatures.yaml) checks containers, init containers
-  and ephemeral containers, including ones added later with `kubectl debug`. Most examples check
-  only `images.containers` and match only `pods` (attacks a06, a08).
+  and ephemeral containers, including ones added later with `kubectl debug`, and Deployments and
+  other controllers when they are created. Most examples check only `images.containers` and match
+  only `pods` (attacks a06, a08, a13).
 - [`policy/allowed-registries.yaml`](policy/allowed-registries.yaml) exists because the signature
   policy only looks at images matching its pattern. An image from anywhere else is not
   "unsigned", it is unexamined (attack a05).
+- Kyverno itself is installed only from two digests that
+  [`test/verify-kyverno.sh`](test/verify-kyverno.sh) checked first: provenance from Kyverno's
+  release workflow at the pinned tag, not from another project using the same generator, not from
+  an older release (attacks a10 to a12). If Kyverno cannot answer, pods are refused (a09); it
+  cannot be scaled to zero or deleted, because then it removes its own webhooks and everything is
+  admitted (a14).
 - Every action is pinned to a commit SHA, every downloaded tool to a checksum, every image to a
   digest, Kyverno's Helm chart included. zizmor runs in its strictest persona on the repository's
   own workflows and must find nothing.
@@ -81,11 +88,14 @@ gh attestation verify oci://ghcr.io/kage7047/supply-chain-fortress/app:<commit s
 | `test/images.sh` | builds the genuine image and one image per cluster attack |
 | `test/attacks.sh` | runs every cluster attack and its control |
 | `test/render.py` | makes test copies of the production policies, changing only marked lines |
+| `test/verify-kyverno.sh` | checks Kyverno's images before they are installed |
+| `test/kyverno-trust.sh` | attacks on Kyverno's own images |
 | `test/admit.sh` | proves the unmodified policies admit the real release |
 | `test/workflows.sh` | runs zizmor on each workflow attack, its fix, and this repo's workflows |
 
 ## Not covered yet
 
-Kyverno's own images are pulled by tag inside its chart, so the verifier is not yet verified;
-Deployments are refused only when they create pods (no policy on the controller objects);
-dependency confusion and build-cache poisoning have no attack yet.
+The registry allowlist checks pods, not Deployments (the signature policy checks both);
+dependency confusion and build-cache poisoning have no attack yet; anyone who can delete Kyverno's
+webhook configurations, or change the `kyverno` namespace, switches all of this off: no admission
+policy can guard webhook configurations, so those permissions belong to cluster admins only.
